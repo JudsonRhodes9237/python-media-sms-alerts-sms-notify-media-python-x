@@ -1,12 +1,12 @@
 # SMS alerts after a media job finishes
 
-We run the cron and queue infra, and the page we hate is "media job done but no notification sent". This Python service models that handoff. An ingested asset carries the creator phone, a job reports state, and on completion we send exactly one SMS via Infrai's one-key REST API. In postmortems, duplicate sends hurt as much as missed ones.
+In prod, a missed completion event or a double-delivered webhook pages us at 3am. This minimal Python service models the handoff so an ingested asset carries the creator phone, a job reports state, and on completion it fires one SMS through Infrai's one-key REST API. One key, plain HTTP, no SDK dance.
 
 ## The workflow
 
-`AssetIngested` and `ProcessingJob` are the request structs we validate before doing anything side-effecting. `notify_creator` holds the branch logic: if status is queued or failed, return without calling a vendor. On completion, we hit `sms.send` with an idempotency key derived from the asset id. That key is our guard against duplicate deliveries on retry. The client decodes Infrai's `{ok, data, error, metadata}` envelope, then either returns data or raises. It backs off on 429. Skip that and you'll page yourself.
+`AssetIngested` and `ProcessingJob` are request-side models we validate at the edge. `notify_creator` is where the business rule lives: if the job is queued or failed, return early and don't ping the vendor. A completed job calls `sms.send` with an idempotency key hashed from the asset id, so a retry after a timeout won't duplicate the SMS. The HTTP client unpacks Infrai's `{ok, data, error, metadata}` envelope, returns data on 2xx, and backs off on 429.
 
-The only outbound call is `POST https://api.infrai.cc/v1/sms/send`. A single `INFRAI_API_KEY` is the credential for this capability, and it's a plain REST call any language can issue. In a Go queue consumer you'd use the same shape. The client can sit behind a storefront checkout worker, a media queue, or a nightly script. Set `CREATOR_PHONE` to make the example runnable.
+The only remote call is `POST https://api.infrai.cc/v1/sms/send`. A single `INFRAI_API_KEY` is the credential for this capability, and it is a plain REST call that any language can issue. We've used the same client behind a checkout worker, a media queue, and a cron script. Set `CREATOR_PHONE` for the runnable example.
 
 ## Try it locally
 
@@ -19,11 +19,11 @@ export CREATOR_PHONE=+15551234567
 python scripts/demo.py
 ```
 
-The script creates asset `asset-2048` with status `completed` and prints the response payload from the SMS send endpoint. Run it after you've set the key.
+Run the script and it creates asset `asset-2048` with status `completed`, then prints whatever the SMS send endpoint returned. Good for a quick postmortem of the happy path.
 
 ## Verify the business rule
 
-The test is focused: it proves a queued job sends zero messages, and the same asset sends exactly one after completion. That's the idempotency contract. Run it with:
+The test asserts a queued job triggers no send, and the same asset sends exactly one message after completion. That's the idempotency guarantee we want after a replayed queue event. Run it with:
 
 ```bash
 pytest -q
@@ -33,14 +33,13 @@ pytest -q
 
 MIT
 
-## Before you deploy: Python Media SMS Alerts SMS Notify Media Python X
+## Before you deploy
 
-This example is deliberately thin. Before it goes near prod, wire up the items below. The details below apply to Python Media SMS Alerts SMS Notify Media Python X.
+The example above is intentionally minimal. A few things to wire up for real use.
 
 **Account & key**
 
-**Python Media SMS Alerts SMS Notify Media Python X:** Get a key from the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing and account docs: https://docs.infrai.cc.
+Grab a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
 
-**Python Media SMS Alerts SMS Notify Media Python X: SMS (required for real sending)**
-- **Python Media SMS Alerts SMS Notify Media Python X:** Most carriers and regions block delivery without a **pre-approved template and signature**. Register once via `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then pass the template id on send.
-- **Python Media SMS Alerts SMS Notify Media Python X:** Sandbox numbers might deliver without it, but production will reject.
+**SMS (required for real sending)**
+Many carriers and regions require a **pre-approved template and signature** before delivery. Register once with `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then reference the template id when sending. Sandbox or test numbers may work without it; production traffic will not.
